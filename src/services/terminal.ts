@@ -4,10 +4,13 @@ import * as vscode from 'vscode';
  * Types text into the focused terminal.
  *
  * Uses `workbench.action.terminal.sendSequence` rather than the `Terminal.sendText`
- * API on purpose: this extension runs on the local machine (`extensionKind: ui`)
- * while the terminal lives on the remote host, so the extension-host terminal API
- * may not see it. `sendSequence` is a core command handled renderer-side, which
- * makes it indifferent to which extension host issued it.
+ * API on purpose. This extension runs on the local machine (`extensionKind: ui`)
+ * while the terminal lives on the remote host; `sendSequence` is a core command
+ * handled renderer-side, so it is indifferent to which extension host issued it.
+ *
+ * Measured on a live Remote-SSH window, `window.activeTerminal` *is* visible to the
+ * local host, so `sendText` would probably work too — but that visibility is not
+ * something the API contract promises, and the renderer-side command costs nothing.
  */
 export async function insertIntoTerminal(text: string): Promise<boolean> {
   try {
