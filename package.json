@@ -22,11 +22,10 @@
   ],
   "keywords": [
     "claude",
-    "clipboard",
     "paste",
-    "terminal",
     "ssh",
-    "remote"
+    "remote",
+    "terminal"
   ],
   "extensionKind": [
     "ui"
