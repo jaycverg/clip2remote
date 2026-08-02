@@ -105,9 +105,9 @@ does not spend seconds hashing it.
 | | |
 | --- | --- |
 | Client | macOS 26.5.2, VS Code with Remote-SSH |
-| Remote | Linux host over SSH |
+| Remote | Linux **and** macOS hosts over SSH |
 | Covered | multi-file clipboard, filenames containing spaces, in-memory screenshots (TIFF → PNG), upload integrity (MD5 match), repeat-paste deduplication, cleanup |
-| Live | `Cmd+V` of a Finder-copied file in a Remote-SSH window: uploaded, deduplicated on repeat, path inserted — with the extension host confirmed running locally (`platform: darwin`) |
+| Live | `Cmd+V` of a Finder-copied file in a Remote-SSH window: uploaded, deduplicated on repeat, path inserted. Extension host confirmed local (`platform: darwin`), authority resolved from the real window, and terminal injection reported `OK` on both remotes |
 
 Windows and Linux clients are **untested and unimplemented** — not merely unverified.
 
