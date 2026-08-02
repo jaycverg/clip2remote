@@ -61,9 +61,11 @@ does not spend seconds hashing it.
 
 - **Terminal injection uses `workbench.action.terminal.sendSequence`**, not the
   `Terminal.sendText` API. The extension runs locally while the terminal lives on the remote
-  host, so the extension-host terminal API may not see it; `sendSequence` is a core command
-  handled renderer-side and is indifferent to which extension host issued it. A
-  clipboard + `terminal.paste` fallback covers the case where it is unavailable.
+  host; `sendSequence` is a core command handled renderer-side and is indifferent to which
+  extension host issued it. A clipboard + `terminal.paste` fallback covers the case where it
+  is unavailable. (Measured on a live Remote-SSH window, `window.activeTerminal` *is* visible
+  to the local host — but the API contract does not promise that, and the core command is
+  free.)
 - **Screenshots are converted TIFF → PNG when needed.** An image on the macOS pasteboard
   frequently carries *only* `public.tiff`, so relying on AppleScript's `«class PNGf»`
   coercion is not sufficient.
@@ -105,6 +107,7 @@ does not spend seconds hashing it.
 | Client | macOS 26.5.2, VS Code with Remote-SSH |
 | Remote | Linux host over SSH |
 | Covered | multi-file clipboard, filenames containing spaces, in-memory screenshots (TIFF → PNG), upload integrity (MD5 match), repeat-paste deduplication, cleanup |
+| Live | `Cmd+V` of a Finder-copied file in a Remote-SSH window: uploaded, deduplicated on repeat, path inserted — with the extension host confirmed running locally (`platform: darwin`) |
 
 Windows and Linux clients are **untested and unimplemented** — not merely unverified.
 
