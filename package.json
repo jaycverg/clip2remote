@@ -1,0 +1,114 @@
+{
+  "name": "clip2remote",
+  "displayName": "Clip2Remote",
+  "description": "Paste any file — zip, video, PDF, anything — from your Mac clipboard into a VS Code terminal, uploading it over Remote-SSH and inserting the remote path. Built for Claude Code and other terminal AI agents. macOS client only.",
+  "version": "0.1.0",
+  "publisher": "jayrome",
+  "license": "MIT",
+  "icon": "icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jaycverg/clip2remote.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jaycverg/clip2remote/issues"
+  },
+  "homepage": "https://github.com/jaycverg/clip2remote#readme",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "claude",
+    "clipboard",
+    "paste",
+    "terminal",
+    "ssh",
+    "remote"
+  ],
+  "extensionKind": [
+    "ui"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "clip2remote.paste",
+        "title": "Clip2Remote: Paste Clipboard File into Terminal"
+      },
+      {
+        "command": "clip2remote.diagnose",
+        "title": "Clip2Remote: Diagnose Environment"
+      },
+      {
+        "command": "clip2remote.cleanRemote",
+        "title": "Clip2Remote: Clean Up Uploaded Files"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "clip2remote.paste",
+        "key": "ctrl+v",
+        "mac": "cmd+v",
+        "when": "terminalFocus"
+      }
+    ],
+    "configuration": {
+      "title": "Clip2Remote",
+      "properties": {
+        "clip2remote.remoteDir": {
+          "type": "string",
+          "default": "/tmp/clip2remote",
+          "description": "Directory on the remote host where pasted files are uploaded."
+        },
+        "clip2remote.host": {
+          "type": "string",
+          "default": "",
+          "description": "SSH host to upload to. Leave empty to derive it from the window's remote authority (recommended)."
+        },
+        "clip2remote.warnAboveBytes": {
+          "type": "number",
+          "default": 104857600,
+          "description": "Ask for confirmation before uploading a file larger than this (bytes). 0 disables the prompt."
+        },
+        "clip2remote.ttlSeconds": {
+          "type": "number",
+          "default": 86400,
+          "description": "Age at which uploaded files are removed by the 'Clean Up Uploaded Files' command."
+        },
+        "clip2remote.reuseSshConnection": {
+          "type": "boolean",
+          "default": true,
+          "description": "Multiplex ssh/scp over a shared control connection. Much faster for repeated pastes; disable if it conflicts with your ssh config."
+        },
+        "clip2remote.trailingSpace": {
+          "type": "boolean",
+          "default": true,
+          "description": "Append a space after the inserted path, so you can keep typing your prompt."
+        },
+        "clip2remote.enableInLocalWindows": {
+          "type": "boolean",
+          "default": false,
+          "description": "Also intercept paste in local (non-SSH) windows, inserting the file's local path. Off by default: in a local window Cmd+V is left entirely alone and behaves as stock VS Code."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "npm run compile && vsce package",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.3",
+    "@vscode/vsce": "^3.2.0"
+  }
+}
