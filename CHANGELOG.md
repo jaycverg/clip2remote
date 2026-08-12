@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1
+
+- Fix `unix_listener: path ... too long for Unix domain socket` when multiplexing to a target
+  whose `user@host:port` is long: the control socket is now a fixed-width hash of the target
+  instead of ssh's unbounded `%r@%h:%p`, with a `/tmp` fallback for long temp dirs.
+
 ## 0.1.0
 
 - Initial release: paste any clipboard file (zip, video, PDF, ...) into a VS Code terminal.

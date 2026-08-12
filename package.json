@@ -2,7 +2,7 @@
   "name": "clip2remote",
   "displayName": "Clip2Remote",
   "description": "Paste any file — zip, video, PDF, anything — from your Mac clipboard into a VS Code terminal, uploading it over Remote-SSH and inserting the remote path. Built for Claude Code and other terminal AI agents. macOS client only.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "jaycverg",
   "license": "MIT",
   "icon": "icon.png",

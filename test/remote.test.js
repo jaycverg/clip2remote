@@ -10,7 +10,14 @@ const {
   remotePathFor,
   sshBaseArgs,
   shellQuote,
+  controlPathFor,
 } = require('../dist/services/remote.js');
+
+// macOS sockaddr_un.sun_path allows 103 usable chars, minus ssh's 17-char temp-master suffix.
+const SOCKET_BUDGET = 103 - 17;
+
+// A 24-char `%r@%h:%p` expansion — the length that overran sun_path under a macOS TMPDIR.
+const LONG_TARGET = { host: 'devuser@build-macmini', port: 22 };
 
 test('resolves a plain ssh_config alias', () => {
   assert.deepStrictEqual(resolveRemoteTarget('ssh-remote+devbox'), { host: 'devbox' });
@@ -73,4 +80,41 @@ test('scp uses -P for the port while ssh uses -p', () => {
 test('connection reuse is opt-out', () => {
   const opts = { target: { host: 'h' }, reuseConnection: false };
   assert.ok(!sshBaseArgs(opts, false).some((a) => String(a).startsWith('ControlMaster')));
+});
+
+test('control path fits sun_path for a long target under a macOS temp dir', () => {
+  // Same 48-char shape macOS gives every user: /var/folders/<2>/<30>/T
+  const macTmp = '/var/folders/mc/abcdefghijklmnopqrstuvwx0000gn/T';
+  const socket = controlPathFor(LONG_TARGET, macTmp);
+
+  assert.ok(socket.startsWith(macTmp + '/'), `expected it under the temp dir, got ${socket}`);
+  assert.ok(socket.length <= SOCKET_BUDGET, `${socket.length} chars: ${socket}`);
+});
+
+test('control path falls back to /tmp when the temp dir blows the budget', () => {
+  const longTmp = '/var/folders/' + 'x'.repeat(80);
+  const socket = controlPathFor(LONG_TARGET, longTmp);
+
+  assert.match(socket, /^\/tmp\/c2r-[0-9a-f]{12}$/);
+  assert.ok(socket.length <= SOCKET_BUDGET, `${socket.length} chars: ${socket}`);
+});
+
+test('control path is stable per target and distinct across targets', () => {
+  const a = controlPathFor(LONG_TARGET);
+  assert.strictEqual(a, controlPathFor(LONG_TARGET));
+
+  assert.notStrictEqual(a, controlPathFor({ host: LONG_TARGET.host, port: 2222 }));
+  assert.notStrictEqual(a, controlPathFor({ host: 'otheruser@build-macmini', port: 22 }));
+});
+
+test('reuse passes the hashed control path to ssh, not %r@%h:%p', () => {
+  const args = sshBaseArgs({ target: LONG_TARGET, reuseConnection: true }, false);
+  const controlPath = args.find((a) => String(a).startsWith('ControlPath='));
+
+  assert.ok(controlPath, 'expected a ControlPath option');
+  assert.ok(!controlPath.includes('%'), `no ssh tokens expected: ${controlPath}`);
+  assert.strictEqual(
+    controlPath,
+    `ControlPath=${controlPathFor(LONG_TARGET)}`
+  );
 });

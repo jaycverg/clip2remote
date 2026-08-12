@@ -72,6 +72,35 @@ export interface SshOptions {
   reuseConnection: boolean;
 }
 
+/** macOS caps sockaddr_un.sun_path at 104 bytes (103 usable chars); Linux allows 107. */
+const MAX_SOCKET_PATH = 103;
+
+/**
+ * ssh binds `<ControlPath>.XXXXXXXXXXXXXXXX` while the master starts up and renames it
+ * afterwards, so the budget is 17 chars tighter than the socket path itself.
+ */
+const SSH_TEMP_SUFFIX = 17;
+
+/**
+ * Control-socket path for a target.
+ *
+ * ssh's own `%r@%h:%p` tokens expand to an unbounded length, and macOS roots TMPDIR at a
+ * ~48-char `/var/folders/…` path, so a merely ordinary `user@host:port` overruns sun_path
+ * and ssh refuses to connect at all. A fixed-width hash of the target keeps every path the
+ * same size, falling back to `/tmp` if the temp dir is long enough to blow the budget anyway.
+ */
+export function controlPathFor(target: RemoteTarget, tmpDir: string = os.tmpdir()): string {
+  const id = crypto
+    .createHash('sha256')
+    .update(`${target.host}:${target.port ?? ''}`)
+    .digest('hex')
+    .slice(0, 12);
+
+  const name = `c2r-${id}`;
+  const preferred = path.join(tmpDir, name);
+  return preferred.length + SSH_TEMP_SUFFIX <= MAX_SOCKET_PATH ? preferred : path.join('/tmp', name);
+}
+
 /** ssh/scp flags shared by every invocation, including optional connection multiplexing. */
 export function sshBaseArgs(opts: SshOptions, forScp: boolean): string[] {
   const args: string[] = ['-o', 'BatchMode=yes'];
@@ -79,7 +108,7 @@ export function sshBaseArgs(opts: SshOptions, forScp: boolean): string[] {
   if (opts.target.port) args.push(forScp ? '-P' : '-p', String(opts.target.port));
 
   if (opts.reuseConnection) {
-    const controlPath = path.join(os.tmpdir(), 'clip2remote-cm-%r@%h:%p');
+    const controlPath = controlPathFor(opts.target);
     args.push(
       '-o', 'ControlMaster=auto',
       '-o', `ControlPath=${controlPath}`,
