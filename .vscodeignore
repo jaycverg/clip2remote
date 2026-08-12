@@ -8,4 +8,5 @@ test/**
 assets/**
 .local/**
 .git/**
+.playwright-mcp/**
 *.vsix
