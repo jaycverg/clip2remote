@@ -1,23 +1,16 @@
 import { execFile } from 'child_process';
 import * as path from 'path';
 
-export type ClipboardContent =
-  | { kind: 'files'; paths: string[] }
-  | { kind: 'image'; paths: string[] }
-  | { kind: 'other'; types: string[] }
-  | { kind: 'error'; message: string };
-
-/** Where the JXA reader stages PNGs it materialises from in-memory clipboard images. */
-export const STAGING_DIR = '/tmp/clip2remote-staging';
+import { ClipboardContent, STAGING_DIR } from './contract';
 
 /**
- * Reads the local macOS pasteboard via a bundled JXA script.
+ * Reads the macOS pasteboard via a bundled JXA script.
  *
  * This runs on the user's own machine — the extension declares `extensionKind: ui`
  * precisely so this can reach the real clipboard even when the window is attached
  * to a remote host over SSH.
  */
-export function readClipboard(extensionPath: string): Promise<ClipboardContent> {
+export function readMacClipboard(extensionPath: string): Promise<ClipboardContent> {
   const script = path.join(extensionPath, 'media', 'clipboard-read.js');
   return new Promise((resolve) => {
     execFile(
@@ -37,4 +30,8 @@ export function readClipboard(extensionPath: string): Promise<ClipboardContent> 
       }
     );
   });
+}
+
+export function describeMacBackend(): string {
+  return 'macOS pasteboard (JXA/AppKit via osascript)';
 }

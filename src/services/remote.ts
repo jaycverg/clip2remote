@@ -43,6 +43,39 @@ export function resolveRemoteTarget(authority: string | undefined): RemoteTarget
 }
 
 /**
+ * What a paste should do in the current window.
+ *
+ * `unresolvedRemote` is the case that matters: the window is attached to a remote, but
+ * no ssh target could be derived from it. Falling back to the local-window behaviour
+ * there would inject client-side paths into a terminal running on another machine —
+ * paths that silently do not exist. It is reported instead.
+ */
+export type PasteMode =
+  | { kind: 'upload'; target: RemoteTarget }
+  | { kind: 'local' }
+  | { kind: 'passthrough' }
+  | { kind: 'unresolvedRemote'; remoteName: string };
+
+/**
+ * Decides how a paste should behave, given what the window reports about itself.
+ *
+ * `remoteName` is the authority on whether the window is local: it is public API and is
+ * set for every remote window, whereas the authority string has to be scavenged off a
+ * URI and is absent in a remote window with no folder or editor open.
+ */
+export function resolvePasteMode(opts: {
+  remoteName: string | undefined;
+  target: RemoteTarget | undefined;
+  enableInLocalWindows: boolean;
+}): PasteMode {
+  if (opts.target) return { kind: 'upload', target: opts.target };
+  if (opts.remoteName !== undefined) {
+    return { kind: 'unresolvedRemote', remoteName: opts.remoteName };
+  }
+  return opts.enableInLocalWindows ? { kind: 'local' } : { kind: 'passthrough' };
+}
+
+/**
  * Short, stable id for a local file.
  *
  * Deliberately fingerprints metadata rather than contents: hashing a multi-hundred-MB
@@ -70,6 +103,43 @@ export function remotePathFor(filePath: string, remoteDir: string): string {
 export interface SshOptions {
   target: RemoteTarget;
   reuseConnection: boolean;
+  /**
+   * True when the user's own ssh_config already multiplexes this host, in which case
+   * we must not impose our own ControlPath — see {@link hasOwnMultiplexing}.
+   */
+  inheritMultiplexing?: boolean;
+}
+
+/**
+ * Whether `ssh -G <host>` reports multiplexing the user configured themselves.
+ *
+ * This matters beyond speed. When a master connection already exists — Remote-SSH holds
+ * one open for the window — riding it needs no authentication at all, which is the only
+ * way uploads can work against a host reachable solely by password: `BatchMode=yes`
+ * forbids prompting, but a multiplexed session never has to.
+ */
+export function hasOwnMultiplexing(sshConfigOutput: string): boolean {
+  const values = new Map<string, string>();
+  for (const line of sshConfigOutput.split('\n')) {
+    const [key, ...rest] = line.trim().split(/\s+/);
+    if (key) values.set(key.toLowerCase(), rest.join(' '));
+  }
+
+  const controlPath = values.get('controlpath');
+  const controlMaster = values.get('controlmaster');
+
+  if (!controlPath || controlPath.toLowerCase() === 'none') return false;
+  // `no`/`false` means ssh will use an existing master but never start one — still reuse.
+  return controlMaster !== undefined && controlMaster.toLowerCase() !== 'false';
+}
+
+/**
+ * Asks ssh what config it would apply to a host. Makes no connection, so it is cheap
+ * enough to consult before each upload.
+ */
+export async function detectOwnMultiplexing(host: string): Promise<boolean> {
+  const res = await run('ssh', ['-G', host]);
+  return res.code === 0 ? hasOwnMultiplexing(res.stdout) : false;
 }
 
 /** macOS caps sockaddr_un.sun_path at 104 bytes (103 usable chars); Linux allows 107. */
@@ -107,7 +177,9 @@ export function sshBaseArgs(opts: SshOptions, forScp: boolean): string[] {
 
   if (opts.target.port) args.push(forScp ? '-P' : '-p', String(opts.target.port));
 
-  if (opts.reuseConnection) {
+  // Never override a ControlPath the user configured: their master may already be
+  // authenticated, and replacing it would force a fresh login we cannot perform.
+  if (opts.reuseConnection && !opts.inheritMultiplexing) {
     const controlPath = controlPathFor(opts.target);
     args.push(
       '-o', 'ControlMaster=auto',
@@ -152,12 +224,14 @@ function run(cmd: string, args: string[], onSpawn?: (child: ChildProcess) => voi
 export async function prepareDestination(
   opts: SshOptions,
   remoteFile: string
-): Promise<{ exists: boolean; error?: string }> {
+): Promise<{ exists: boolean; error?: string; code?: number }> {
   const dir = path.posix.dirname(remoteFile);
   const script = `mkdir -p ${shellQuote(dir)} && { [ -f ${shellQuote(remoteFile)} ] && echo EXISTS || echo MISSING; }`;
   const res = await run('ssh', [...sshBaseArgs(opts, false), opts.target.host, script]);
 
-  if (res.code !== 0) return { exists: false, error: res.stderr.trim() || `ssh exited ${res.code}` };
+  if (res.code !== 0) {
+    return { exists: false, code: res.code, error: res.stderr.trim() || `ssh exited ${res.code}` };
+  }
   return { exists: res.stdout.trim().endsWith('EXISTS') };
 }
 

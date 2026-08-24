@@ -1,22 +1,35 @@
 import { ChildProcess } from 'child_process';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 
-import { readClipboard, ClipboardContent, STAGING_DIR } from './services/clipboard';
+import {
+  readClipboard,
+  describeBackend,
+  isSupportedPlatform,
+  ClipboardContent,
+  STAGING_DIR,
+} from './services/clipboard';
 import {
   RemoteTarget,
   SshOptions,
+  detectOwnMultiplexing,
   prepareDestination,
   pruneRemote,
   remotePathFor,
+  resolvePasteMode,
   resolveRemoteTarget,
   shellQuote,
   upload,
 } from './services/remote';
+import { establishMaster, hasLiveMaster, isAuthFailure } from './services/ssh-auth';
 import { insertIntoTerminal, passThroughPaste } from './services/terminal';
 
 let output: vscode.OutputChannel;
+
+/** Guards the one-shot notice for an unreadable clipboard; see {@link warnUnavailableOnce}. */
+let unavailableWarned = false;
 
 export function activate(context: vscode.ExtensionContext): void {
   output = vscode.window.createOutputChannel('Clip2Remote');
@@ -45,6 +58,7 @@ function config() {
     reuseConnection: c.get<boolean>('reuseSshConnection', true),
     trailingSpace: c.get<boolean>('trailingSpace', true),
     enableInLocalWindows: c.get<boolean>('enableInLocalWindows', false),
+    masterPersistSeconds: c.get<number>('masterPersistSeconds', 3600),
   };
 }
 
@@ -56,9 +70,15 @@ function config() {
  * or the active editor when the window has no folder open.
  */
 function currentAuthority(): string | undefined {
+  // Deliberately NOT `env.remoteAuthority`: it exists at runtime but is a *proposed*
+  // API, and touching it from a published extension raises a user-visible
+  // "CANNOT use API proposal" error rather than returning undefined.
   const candidates = [
     ...(vscode.workspace.workspaceFolders ?? []).map((f) => f.uri),
+    vscode.workspace.workspaceFile,
     vscode.window.activeTextEditor?.document.uri,
+    ...vscode.window.visibleTextEditors.map((e) => e.document.uri),
+    ...vscode.workspace.textDocuments.map((d) => d.uri),
   ];
 
   for (const uri of candidates) {
@@ -75,28 +95,53 @@ function target(): RemoteTarget | undefined {
 }
 
 /**
- * Main entry point, bound to Cmd+V in the terminal.
+ * Main entry point, bound to the terminal's paste keystroke.
  *
  * Anything that is not a file or an image on the clipboard is handed straight back
  * to VS Code, so ordinary text pasting is never intercepted or slowed down beyond
- * the ~60ms clipboard probe.
+ * the clipboard probe (~60 ms on macOS, ~10 ms on Linux).
  */
 async function paste(context: vscode.ExtensionContext): Promise<void> {
-  if (process.platform !== 'darwin') {
+  if (!isSupportedPlatform()) {
     await passThroughPaste();
     return;
   }
 
-  // Bail out before touching the clipboard so a local window carries zero overhead
-  // and Cmd+V behaves exactly as stock VS Code.
-  const remote = target();
-  if (!remote && !config().enableInLocalWindows) {
+  // Decide before touching the clipboard, so a window we do not act in carries zero
+  // overhead and the paste keystroke behaves exactly as stock VS Code.
+  const mode = resolvePasteMode({
+    remoteName: vscode.env.remoteName,
+    target: target(),
+    enableInLocalWindows: config().enableInLocalWindows,
+  });
+
+  if (mode.kind === 'passthrough') {
     await passThroughPaste();
     return;
   }
+  if (mode.kind === 'unresolvedRemote') {
+    // Never insert client-side paths into a terminal on another machine: they would
+    // point at files the remote cannot see. Opening a folder gives us the authority.
+    fail(
+      `this window is attached to "${mode.remoteName}" but no SSH target could be resolved ` +
+      `from it — open a folder on the remote, or set "clip2remote.host".`
+    );
+    await passThroughPaste();
+    return;
+  }
+
+  const remote = mode.kind === 'upload' ? mode.target : undefined;
 
   const clip = await readClipboard(context.extensionPath);
 
+  if (clip.kind === 'unavailable') {
+    // Actionable and unchanging for the session — surface it once, then stay quiet
+    // so an unfixed environment does not nag on every keystroke.
+    output.appendLine(`clipboard unavailable: ${clip.message}`);
+    warnUnavailableOnce(clip.message);
+    await passThroughPaste();
+    return;
+  }
   if (clip.kind === 'error') {
     output.appendLine(`clipboard read failed: ${clip.message}`);
     await passThroughPaste();
@@ -128,6 +173,38 @@ async function paste(context: vscode.ExtensionContext): Promise<void> {
   }
 }
 
+/**
+ * Prompts for a password and opens a reusable master connection.
+ *
+ * Returns whether a master is now available. Declining is a normal outcome, not an error:
+ * the upload then fails with the original ssh message, which says what is wrong.
+ */
+async function authenticate(remote: RemoteTarget, persistSeconds: number): Promise<boolean> {
+  if (hasLiveMaster(remote)) return true;
+
+  const password = await vscode.window.showInputBox({
+    password: true,
+    ignoreFocusOut: true,
+    title: `Clip2Remote: authenticate to ${remote.host}`,
+    prompt:
+      `${remote.host} accepts no key, so the upload cannot authenticate on its own. ` +
+      `The connection is kept open for ${Math.round(persistSeconds / 60)} min, so later pastes will not ask again.`,
+  });
+  if (!password) return false;
+
+  const result = await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: `Clip2Remote: connecting to ${remote.host}` },
+    () => establishMaster(remote, password, persistSeconds)
+  );
+
+  if (!result.ok) {
+    fail(`could not authenticate to ${remote.host}: ${result.error}`);
+    return false;
+  }
+  output.appendLine(`opened master connection to ${remote.host}`);
+  return true;
+}
+
 /** Uploads every clipboard file, returning the remote paths that landed successfully. */
 async function uploadAll(
   localPaths: string[],
@@ -135,7 +212,13 @@ async function uploadAll(
   clip: ClipboardContent
 ): Promise<string[]> {
   const cfg = config();
-  const ssh: SshOptions = { target: remote, reuseConnection: cfg.reuseConnection };
+  const ssh: SshOptions = {
+    target: remote,
+    reuseConnection: cfg.reuseConnection,
+    // Riding a master the user already authenticated (Remote-SSH holds one open) is
+    // what lets a password-only host work at all, since BatchMode cannot prompt.
+    inheritMultiplexing: await detectOwnMultiplexing(remote.host),
+  };
 
   const oversized = localPaths.filter((p) => fs.statSync(p).size > cfg.warnAboveBytes);
   if (cfg.warnAboveBytes > 0 && oversized.length > 0) {
@@ -166,7 +249,17 @@ async function uploadAll(
         });
 
         const remoteFile = remotePathFor(localPath, cfg.remoteDir);
-        const prepared = await prepareDestination(ssh, remoteFile);
+        let prepared = await prepareDestination(ssh, remoteFile);
+
+        // A password-only host cannot authenticate under BatchMode. Offer to open one
+        // master connection now; ControlPersist then covers every later paste.
+        if (prepared.error && isAuthFailure(prepared.error, prepared.code ?? 0) && !ssh.inheritMultiplexing) {
+          if (await authenticate(remote, cfg.masterPersistSeconds)) {
+            ssh.reuseConnection = true;
+            prepared = await prepareDestination(ssh, remoteFile);
+          }
+        }
+
         if (prepared.error) {
           fail(`ssh to ${remote.host} failed: ${prepared.error}`);
           break;
@@ -211,7 +304,11 @@ async function cleanRemote(): Promise<void> {
 
   const cfg = config();
   const res = await pruneRemote(
-    { target: remote, reuseConnection: cfg.reuseConnection },
+    {
+      target: remote,
+      reuseConnection: cfg.reuseConnection,
+      inheritMultiplexing: await detectOwnMultiplexing(remote.host),
+    },
     cfg.remoteDir,
     cfg.ttlSeconds
   );
@@ -238,7 +335,9 @@ async function diagnose(context: vscode.ExtensionContext): Promise<void> {
 
   const lines = [
     '=== Clip2Remote diagnostics ===',
-    `extension host platform : ${process.platform} (expect "darwin" — proves it runs locally)`,
+    `extension host platform : ${process.platform}`,
+    `extension host hostname : ${os.hostname()} (expect your own machine, not the remote)`,
+    `clipboard backend       : ${describeBackend()}`,
     `remoteName              : ${vscode.env.remoteName ?? '(none — local window)'}`,
     `remote authority        : ${currentAuthority() ?? '(none — local window)'}`,
     `resolved ssh target     : ${remote ? remote.host + (remote.port ? `:${remote.port}` : '') : '(none)'}`,
@@ -246,7 +345,7 @@ async function diagnose(context: vscode.ExtensionContext): Promise<void> {
     `active here             : ${remote ? 'yes (SSH window)' : config().enableInLocalWindows ? 'yes (local window, opted in)' : 'no — local window, Cmd+V passes straight through'}`,
     `activeTerminal visible  : ${vscode.window.activeTerminal ? 'yes' : 'no (expected for a ui extension; sendSequence is used instead)'}`,
     `clipboard kind          : ${clip.kind}`,
-    `clipboard detail        : ${clip.kind === 'other' ? clip.types.join(', ') : clip.kind === 'error' ? clip.message : clip.paths.join(', ')}`,
+    `clipboard detail        : ${clipboardDetail(clip)}`,
   ];
 
   output.appendLine(lines.join('\n'));
@@ -254,6 +353,32 @@ async function diagnose(context: vscode.ExtensionContext): Promise<void> {
 
   const probe = await insertIntoTerminal('');
   output.appendLine(`terminal injection      : ${probe ? 'OK' : 'FAILED'}`);
+}
+
+/**
+ * Reports an unreadable clipboard once per session.
+ *
+ * The conditions behind `unavailable` — a missing helper tool, no graphical session —
+ * cannot change without the user acting, so repeating the notice on every paste would
+ * be pure noise. The output channel still records each occurrence.
+ */
+function warnUnavailableOnce(message: string): void {
+  if (unavailableWarned) return;
+  unavailableWarned = true;
+  vscode.window.showWarningMessage(`Clip2Remote: ${message}`);
+}
+
+/** The informative half of a clipboard reading, whichever variant it is. */
+function clipboardDetail(clip: ClipboardContent): string {
+  switch (clip.kind) {
+    case 'files':
+    case 'image':
+      return clip.paths.join(', ');
+    case 'other':
+      return clip.types.join(', ') || '(clipboard empty)';
+    default:
+      return clip.message;
+  }
 }
 
 function isRegularFile(p: string): boolean {

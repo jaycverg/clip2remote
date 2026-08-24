@@ -11,6 +11,8 @@ const {
   sshBaseArgs,
   shellQuote,
   controlPathFor,
+  resolvePasteMode,
+  hasOwnMultiplexing,
 } = require('../dist/services/remote.js');
 
 // macOS sockaddr_un.sun_path allows 103 usable chars, minus ssh's 17-char temp-master suffix.
@@ -117,4 +119,95 @@ test('reuse passes the hashed control path to ssh, not %r@%h:%p', () => {
     controlPath,
     `ControlPath=${controlPathFor(LONG_TARGET)}`
   );
+});
+
+// --- resolvePasteMode: never inject client paths into a remote terminal ---
+
+const LOCAL_ON = { enableInLocalWindows: true };
+const LOCAL_OFF = { enableInLocalWindows: false };
+
+test('a resolved ssh target uploads', () => {
+  assert.deepStrictEqual(
+    resolvePasteMode({ remoteName: 'ssh-remote', target: { host: 'devbox' }, ...LOCAL_OFF }),
+    { kind: 'upload', target: { host: 'devbox' } }
+  );
+});
+
+test('a genuinely local window honours enableInLocalWindows', () => {
+  assert.deepStrictEqual(
+    resolvePasteMode({ remoteName: undefined, target: undefined, ...LOCAL_ON }),
+    { kind: 'local' }
+  );
+});
+
+test('a local window with the setting off passes through', () => {
+  assert.deepStrictEqual(
+    resolvePasteMode({ remoteName: undefined, target: undefined, ...LOCAL_OFF }),
+    { kind: 'passthrough' }
+  );
+});
+
+test('a remote window with no resolvable target never falls back to local paths', () => {
+  // Observed live: Remote-SSH with no folder open exposes no authority, and inserting
+  // the client's own paths put Ubuntu paths into a terminal running on a Mac.
+  assert.deepStrictEqual(
+    resolvePasteMode({ remoteName: 'ssh-remote', target: undefined, ...LOCAL_ON }),
+    { kind: 'unresolvedRemote', remoteName: 'ssh-remote' }
+  );
+});
+
+test('a non-ssh remote (wsl, container) reports rather than inserting local paths', () => {
+  assert.deepStrictEqual(
+    resolvePasteMode({ remoteName: 'wsl', target: undefined, ...LOCAL_ON }),
+    { kind: 'unresolvedRemote', remoteName: 'wsl' }
+  );
+});
+
+test('an explicit host override still uploads from an authority-less remote window', () => {
+  assert.deepStrictEqual(
+    resolvePasteMode({ remoteName: 'ssh-remote', target: { host: 'override' }, ...LOCAL_ON }),
+    { kind: 'upload', target: { host: 'override' } }
+  );
+});
+
+// --- hasOwnMultiplexing: inherit the user's master instead of opening our own ---
+//
+// Source: `ssh -G <host>` output shapes, verified against Ubuntu 24.04 OpenSSH on
+// 2026-08-23 (a host with no multiplexing reports `controlmaster false` and omits
+// controlpath entirely).
+
+test('a host with no multiplexing configured is not inherited', () => {
+  assert.strictEqual(hasOwnMultiplexing('user jayrome\nhostname 192.168.3.5\ncontrolmaster false\ncontrolpersist no'), false);
+});
+
+test('an explicit ControlPath of none is not inherited', () => {
+  assert.strictEqual(hasOwnMultiplexing('controlmaster auto\ncontrolpath none'), false);
+});
+
+test('a configured ControlMaster and ControlPath is inherited', () => {
+  assert.strictEqual(
+    hasOwnMultiplexing('controlmaster auto\ncontrolpath /home/jayrome/.ssh/sockets/jayrome@192.168.3.5-22'),
+    true
+  );
+});
+
+test('ControlMaster no still inherits — ssh joins an existing master without starting one', () => {
+  assert.strictEqual(hasOwnMultiplexing('controlmaster no\ncontrolpath ~/.ssh/sockets/x'), true);
+});
+
+test('inheriting suppresses our own ControlPath so the user master is used', () => {
+  const args = sshBaseArgs(
+    { target: { host: 'mymac' }, reuseConnection: true, inheritMultiplexing: true },
+    false
+  );
+  assert.ok(!args.includes('ControlMaster=auto'), 'must not impose our own ControlMaster');
+  assert.ok(!args.some((a) => String(a).startsWith('ControlPath=')), 'must not impose our own ControlPath');
+});
+
+test('without an inherited master we still open our own', () => {
+  const args = sshBaseArgs(
+    { target: { host: 'mymac' }, reuseConnection: true, inheritMultiplexing: false },
+    false
+  );
+  assert.ok(args.includes('ControlMaster=auto'));
 });

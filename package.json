@@ -1,8 +1,8 @@
 {
   "name": "clip2remote",
   "displayName": "Clip2Remote",
-  "description": "Paste any file — zip, video, PDF, anything — from your Mac clipboard into a VS Code terminal, uploading it over Remote-SSH and inserting the remote path. Built for Claude Code and other terminal AI agents. macOS client only.",
-  "version": "0.1.1",
+  "description": "Paste any file — zip, video, PDF, anything — from your local clipboard into a VS Code terminal, uploading it over Remote-SSH and inserting the remote path. Built for Claude Code and other terminal AI agents. macOS and Linux clients.",
+  "version": "0.2.0",
   "publisher": "jaycverg",
   "license": "MIT",
   "icon": "icon.png",
@@ -55,6 +55,11 @@
         "key": "ctrl+v",
         "mac": "cmd+v",
         "when": "terminalFocus"
+      },
+      {
+        "command": "clip2remote.paste",
+        "key": "ctrl+shift+v",
+        "when": "terminalFocus"
       }
     ],
     "configuration": {
@@ -90,6 +95,11 @@
           "default": true,
           "description": "Append a space after the inserted path, so you can keep typing your prompt."
         },
+        "clip2remote.masterPersistSeconds": {
+          "type": "number",
+          "default": 3600,
+          "description": "How long a password-authenticated SSH master connection is kept open, in seconds. Longer means fewer password prompts; the connection is closed by ssh once idle for this long."
+        },
         "clip2remote.enableInLocalWindows": {
           "type": "boolean",
           "default": false,
@@ -102,12 +112,15 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "package": "npm run compile && vsce package",
+    "publish:ovsx": "ovsx publish clip2remote-$npm_package_version.vsix",
+    "test": "npm run compile && node --test test/registry.test.js test/remote.test.js test/clipboard.test.js test/ssh-auth.test.js",
     "vscode:prepublish": "npm run compile"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
-    "typescript": "^5.3.3",
-    "@vscode/vsce": "^3.2.0"
+    "@vscode/vsce": "^3.2.0",
+    "ovsx": "^1.1.1",
+    "typescript": "^5.3.3"
   }
 }
